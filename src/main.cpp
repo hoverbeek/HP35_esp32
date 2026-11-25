@@ -430,7 +430,7 @@ void help() {
   Serial0.println("Sleep: sleep status | sleep light [SECONDS] | sleep deep [SECONDS] | sleep auto on/off");
   Serial0.println("Motion: motion status | motion scan | motion sample | sleep motion [SECONDS] | sleep motion irq [SECONDS]");
   Serial0.println("Auto sleep is OFF by default: 100ms light-sleep slices after 100ms idle, deep sleep after 30s.");
-  Serial0.println("Phase 7.14: dedicated black LVGL prism screen, BCD default.");
+  Serial0.println("Phase 7.18: power diagnostics, LVGL prism screen, BCD default.");
   Serial0.println("Trace: trace sin/cos/tan/atan/ln/exp VALUE");
   Serial0.println("Trace navigation: trace next | trace prev | trace jump N | trace show");
   Serial0.println("Hidden scratch: hidden or allregs, view stack | view regs | view hidden | view trace");
@@ -729,7 +729,12 @@ void loop() {
     if(c=='\r'||c=='\n') {
       if(inputLen) {input[inputLen]='\0'; Serial0.println();runLine(input);inputLen=0;}
       Serial0.print("> ");
-    } else if(c=='\b'||c==127) {if(inputLen)inputLen--;}
+    } else if(c=='\b'||c==127) {
+      if(inputLen) {
+        --inputLen;
+        Serial0.print("\b \b"); // Erase last echoed character in ANSI-compatible serial terminal.
+      }
+    }
     else if(c>=32 && inputLen<sizeof(input)-1) {input[inputLen++]=c;Serial0.write(c);}
     lastInputMs=millis();
   }
