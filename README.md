@@ -1,3 +1,51 @@
+# HP-35 Phase 7.18 — power diagnostics and backlight control
+
+**Built on merged and hardware-tested Phase 7.17.** The hardware QMI8658
+interrupt wake, 7.16 polling fallback, and 7.15 RTC stack retention remain.
+
+New UART0 commands:
+
+- `power stats` — current-boot uptime, number and measured elapsed time of
+  light-sleep timer episodes and interrupt-driven light-sleep episodes,
+  GPIO/timer wake breakdown, sleep failures, RTC-retained deep-sleep
+  entry/wake counters, backlight state.
+- `power reset` — reset cumulative sleep statistics.
+- `power backlight off` / `power backlight on` — control GPIO20 LED
+  backlight while leaving calculation and LVGL tasks running. The preference
+  is respected when returning from light sleep, but is not retained through
+  a deep-sleep boot.
+
+The stats structure is stored in RTC_DATA_ATTR, surviving normal timer-based
+deep-sleep wake. Full power removal invalidates/clears it. Timing is measured
+by the MCU and is **not** a current draw or battery-life measurement. Deep
+sleep reports requested timer duration, NOT verified actual sleeping duration.
+Do not infer milliamp consumption from software counters.
+
+## Suggested hardware test
+
+```
+1 2 3 4
+power stats
+sleep motion irq 15
+power stats
+power backlight off
+power stats
+power backlight on
+sleep deep 10
+power stats
+stack
+```
+
+The LCD should remain dark during motion sleep, GPIO wake should restore
+the original stack, and deep-sleep wake should restore RTC state as before.
+You can now separately measure backlight-on and backlight-off power using
+an external USB power meter or series ammeter.
+
+**Validation:** GitHub source changes prepared; PlatformIO compilation and
+on-device behavior still need to be verified. `main` is unchanged.
+
+---
+
 # HP-35 Phase 7.17 — hardware motion interrupt (experimental)
 
 7.16 remains on main. This feature branch adds `sleep motion irq 15`

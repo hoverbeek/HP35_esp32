@@ -23,6 +23,7 @@
 #include <driver/gpio.h>
 #include <esp_system.h>
 #include "sleep_state.h"
+#include "power_stats.h"
 #include <stdlib.h>
 #include <string.h>
 #define BLACK 0x0000
@@ -60,6 +61,31 @@ static constexpr uint32_t AUTO_LIGHT_IDLE_MS=100;
 static constexpr uint32_t AUTO_DEEP_IDLE_MS=30000;
 static constexpr uint32_t AUTO_LIGHT_SLICE_MS=100;
 static constexpr uint32_t AUTO_DEEP_WAKE_SEC=10;
+RTC_DATA_ATTR hp35power::Stats powerStats{};
+static bool userBacklightOn=true;
+static void restoreBacklight() {
+  digitalWrite(LCD_BL,userBacklightOn?HIGH:LOW);
+}
+static void printPowerStats() {
+  if(!hp35power::valid(powerStats))hp35power::reset(powerStats);
+  const auto &p=powerStats;
+  Serial0.println("Phase 7.18 power diagnostics (time estimates, NOT current measurements)");
+  Serial0.printf("Uptime (current boot): %lu ms | backlight: %s\r\n",
+    (unsigned long)millis(),userBacklightOn?"ON":"OFF");
+  Serial0.printf("Light sleep timer: count=%lu, accumulated=%llu ms\r\n",
+    (unsigned long)p.timerLightCount,(unsigned long long)(p.timerLightUs/1000ULL));
+  Serial0.printf("Light sleep motion IRQ: count=%lu, accumulated=%llu ms\r\n",
+    (unsigned long)p.irqLightCount,(unsigned long long)(p.irqLightUs/1000ULL));
+  Serial0.printf("IRQ wake sources: GPIO=%lu timer=%lu other=%lu, failures=%lu\r\n",
+    (unsigned long)p.gpioWakes,(unsigned long)p.timerWakes,
+    (unsigned long)p.otherWakes,(unsigned long)p.sleepFailures);
+  Serial0.printf("Deep-sleep entries=%lu, boots after deep-sleep=%lu, last requested=%lu s\r\n",
+    (unsigned long)p.deepEntries,(unsigned long)p.deepWakes,
+    (unsigned long)p.lastDeepRequestedSec);
+  Serial0.printf("Last light-sleep duration=%lu ms, last IRQ wake cause=%lu\r\n",
+    (unsigned long)p.lastSleepMs,(unsigned long)p.lastWakeCause);
+  Serial0.println("Deep sleep current and actual battery life require an external ammeter.");
+}
 void show();
 static bool lightSleepMs(uint32_t ms, bool restoreBacklight=true);
 static hp35motion::QMI8658 motion;
@@ -111,7 +137,7 @@ static void lightSleepMotion(uint32_t seconds) {
   else if(failed)Serial0.println("Sleep or QMI8658 read error");
   else if(serialCancel)Serial0.println("Motion watch cancelled by serial input");
   else Serial0.println("Motion watch timed out: no threshold crossing");
-  digitalWrite(LCD_BL,HIGH); // Restore only after movement, timeout or error.
+  restoreBacklight(); // Restore respecting user backlight preference.
   lastInputMs=millis();
   show();
 }
@@ -159,10 +185,12 @@ static void lightSleepMotionIRQ(uint32_t seconds) {
   err=esp_light_sleep_start();
   const esp_sleep_wakeup_cause_t cause=esp_sleep_get_wakeup_cause();
   const int level=digitalRead(46);
-  digitalWrite(LCD_BL,HIGH);
+  restoreBacklight();
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   gpio_wakeup_disable(irq);
   const bool recovered=motion.stopWakeOnMotion();
+  hp35power::irqLight(powerStats,millis()-started,(uint32_t)cause,err==ESP_OK,
+    (uint32_t)ESP_SLEEP_WAKEUP_GPIO,(uint32_t)ESP_SLEEP_WAKEUP_TIMER);
   Serial0.printf("IRQ wake: err=%d cause=%d INT1=%d elapsed=%lu ms; sensor=%s\r\n",
     (int)err,(int)cause,level,(unsigned long)(millis()-started),
     recovered?"READY":"NOT READY");
@@ -200,16 +228,19 @@ static bool restoreRetainedState() {
 }
 static bool lightSleepMs(uint32_t ms, bool restoreBacklight) {
   Serial0.flush();
+  const uint32_t sleepStarted=millis();
   digitalWrite(LCD_BL,LOW);
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   const esp_err_t configured=esp_sleep_enable_timer_wakeup(uint64_t(ms)*1000ULL);
   if(configured!=ESP_OK) {
-    if(restoreBacklight) digitalWrite(LCD_BL,HIGH);
+    if(restoreBacklight) {digitalWrite(LCD_BL,userBacklightOn?HIGH:LOW);}
+    hp35power::timerLight(powerStats,0,false);
     Serial0.printf("Light-sleep timer configuration failed: %d\r\n",(int)configured);
     return false;
   }
   const esp_err_t result=esp_light_sleep_start();
-  if(restoreBacklight) digitalWrite(LCD_BL,HIGH);
+  hp35power::timerLight(powerStats,millis()-sleepStarted,result==ESP_OK);
+  if(restoreBacklight) {digitalWrite(LCD_BL,userBacklightOn?HIGH:LOW);}
   if(result!=ESP_OK)Serial0.printf("Light sleep failed: %d\r\n",(int)result);
   return result==ESP_OK;
 }
@@ -225,6 +256,7 @@ static void deepSleepSeconds(uint32_t secs) {
     Serial0.printf("Deep-sleep timer configuration failed: %d\r\n",(int)configured);
     return;
   }
+  hp35power::deepStart(powerStats,secs);
   esp_deep_sleep_start(); // boot setup() restores retained snapshot
 }
 
@@ -394,6 +426,7 @@ void binary(double result) {
   calc.st[0]=result; calc.st[1]=calc.st[2]; calc.st[2]=calc.st[3];
 }
 void help() {
+  Serial0.println("Power: power stats | power reset | power backlight on/off");
   Serial0.println("Sleep: sleep status | sleep light [SECONDS] | sleep deep [SECONDS] | sleep auto on/off");
   Serial0.println("Motion: motion status | motion scan | motion sample | sleep motion [SECONDS] | sleep motion irq [SECONDS]");
   Serial0.println("Auto sleep is OFF by default: 100ms light-sleep slices after 100ms idle, deep sleep after 30s.");
@@ -494,6 +527,18 @@ void execute(const char* tok) {
   calc.step++;status();
 }
 void runLine(char *line) {
+  if(strcmp(line,"power")==0 || strcmp(line,"power stats")==0 || strcmp(line,"power status")==0) {
+    printPowerStats();return;
+  }
+  if(strcmp(line,"power reset")==0) {
+    hp35power::reset(powerStats);Serial0.println("Power counters reset.");return;
+  }
+  if(strcmp(line,"power backlight off")==0) {
+    userBacklightOn=false;restoreBacklight();Serial0.println("LCD backlight OFF (LVGL and calculator still running)");return;
+  }
+  if(strcmp(line,"power backlight on")==0) {
+    userBacklightOn=true;restoreBacklight();Serial0.println("LCD backlight ON");return;
+  }
   if(strcmp(line,"motion")==0 || strcmp(line,"motion status")==0) {
     Serial0.printf("QMI8658 %s, I2C=0x%02X, ID=0x%02X, SDA%d SCL%d, INT1 GPIO46 / INT2 GPIO45\r\n",
        motion.available()?"READY":"NOT DETECTED",motion.address(),motion.identity(),motion.sda(),motion.scl());
@@ -641,6 +686,8 @@ void runLine(char *line) {
 void setup() {
   Serial0.begin(115200);
   const bool wokeDeep=(esp_reset_reason()==ESP_RST_DEEPSLEEP);
+  if(!hp35power::valid(powerStats))hp35power::reset(powerStats);
+  if(wokeDeep)hp35power::deepWake(powerStats);
   const bool restored=wokeDeep && restoreRetainedState();
   lastInputMs=millis();
   delay(2000);
@@ -659,7 +706,7 @@ void setup() {
 #endif
   show();
   delay(300);
-  Serial0.println("\r\n=== HP-35 ESP32-S3 phase 7.17 | MOTION INTERRUPT ===");
+  Serial0.println("\r\n=== HP-35 ESP32-S3 phase 7.18 | POWER DIAGNOSTICS ===");
   Serial0.printf("Boot: %s; RTC snapshot: %s\r\n",wokeDeep?"deep-sleep wake":"power/reset",restored?"RESTORED":"not restored");
   if(restored)Serial0.println("BCD stack, entry mode, error, view and prism restored; trace history not retained.");
   help();status();
