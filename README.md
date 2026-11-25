@@ -1,3 +1,61 @@
+# Phase 7.20 — experimental UART0 + accelerometer light-sleep wake
+
+Built on the merged and tested Phase 7.19. No changes to the BCD engine,
+RTC stack restoration, or existing default (serial-safe LCD blanking) mode.
+
+## Commands
+
+- `sleep auto motion on`: Phase 7.19 serial-safe LCD blanking; **CPU stays awake**.
+- `sleep auto motion uart on`: **experimental** true light sleep after 5s
+  idle. QMI8658 INT1 on GPIO46, UART0 and a 2s backup timer are enabled
+  as concurrent wake sources.
+- `sleep auto motion uart off` or `sleep auto motion off`: disable auto mode
+  when the UART is responsive.
+- `sleep auto motion irq on`: previous, non-UART light-sleep mode.
+- `sleep status` shows the UART wake mode and threshold.
+
+### UART wake caveat
+
+Espressif documents UART0 light-sleep wake based on RX rising edges and warns
+that the triggering characters may be **lost** while the MCU starts up.
+Threshold is **3 rising edges**. **Do not send a command as the wake sequence.**
+
+Instead, while the LCD is dark, send `~~~~~~` and press Enter. Wait until
+the console reports `UART0 woke the calculator!` and
+`UART wake acknowledged. Send command within 15 seconds.`. Then send
+`sleep status` or `sleep auto motion uart off`. The MCU remains awake for
+15 seconds following a successful UART wake so a complete command can arrive.
+
+Serial wiring must actually use the UART0 RX peripheral (we use
+`Serial0` and `ARDUINO_USB_CDC_ON_BOOT=0`). USB-native CDC by itself
+is not a UART wake source. Behavior is board- and core-version-dependent
+and **must be tested on the Waveshare ESP32-S3 board**.
+
+The screen remains off across timer check-ins. A real motion event restores
+the display and retains RPN registers. The new mode does not enter deep
+sleep, because IMU INT1 GPIO46 cannot wake from deep sleep on the S3.
+On setup/configuration failure, auto mode disables itself. Reset the board
+to restore the safe default if wake-up becomes unreliable.
+
+## Suggested test
+
+1. Build/upload and confirm `P7.20` in LCD and 7.20 banner on serial.
+2. Type `1 2 3 4`, then `sleep auto motion uart on`.
+3. Leave the board still until the backlight goes dark.
+4. **Without moving the board**, send `~~~~~~` + Enter.
+5. Check for wake cause `UART` (ESP_SLEEP_WAKEUP_UART), acknowledgment and prompt.
+6. Within 15s type `sleep status` and `stack`.
+7. Let it sleep again; pick the board up to verify GPIO motion wake.
+8. Run `power stats` to inspect wake counters. In the 7.18 counter
+   implementation, UART is counted in the `other` wake-source bucket.
+9. Disable: `sleep auto motion uart off`. Verify old `sleep auto motion on`
+   serial-safe behavior is unaffected.
+
+**Status:** source code committed but NOT compiled/tested on real hardware.
+`main` remains on the validated 7.19 release.
+
+---
+
 ## 7.19 follow-up: serial-safe automatic motion mode (updated)
 
 **Important design correction:** UART0 is not a reliable wake source in our
