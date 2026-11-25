@@ -17,6 +17,9 @@
 #include "debug_trace.h"
 #include "prism_animation.h"
 #include <esp_timer.h>
+#include <esp_sleep.h>
+#include <esp_system.h>
+#include "sleep_state.h"
 #include <stdlib.h>
 #include <string.h>
 #define BLACK 0x0000
@@ -45,6 +48,70 @@ enum class View {Stack, Regs, Hidden, Trace};
 View currentView = View::Stack;
 // Crystal prism mode rotates the physical LCD by 180 degrees.
 bool prismMode = false;
+// The snapshot has a plain POD layout: dynamic std::string/vector pointers
+// cannot safely survive deep sleep.
+RTC_DATA_ATTR hp35sleep::Snapshot retainedState{};
+static bool autoSleep=false;
+static uint32_t lastInputMs=0;
+static constexpr uint32_t AUTO_LIGHT_IDLE_MS=100;
+static constexpr uint32_t AUTO_DEEP_IDLE_MS=30000;
+static constexpr uint32_t AUTO_LIGHT_SLICE_MS=100;
+static constexpr uint32_t AUTO_DEEP_WAKE_SEC=10;
+
+static void saveRetainedState() {
+  auto &s=retainedState;
+  memset(&s,0,sizeof(s));
+  s.magic=hp35sleep::MAGIC;s.format=hp35sleep::FORMAT;
+  hp35sleep::captureBCD(s,bcdCalc);
+  s.bcdMode=bcdMode?1:0;s.early=calc.early?1:0;
+  s.prism=prismMode?1:0;s.view=static_cast<uint8_t>(currentView);
+  s.autoSleep=autoSleep?1:0;
+  for(int i=0;i<4;++i)s.floatStack[i]=calc.st[i];
+  s.floatError=calc.error?1:0;s.floatSteps=calc.step;
+  s.checksum=hp35sleep::checksum(s);
+}
+static bool restoreRetainedState() {
+  if(!hp35sleep::restoreBCD(retainedState,bcdCalc))return false;
+  const auto &s=retainedState;
+  bcdMode=s.bcdMode!=0;calc.early=s.early!=0;
+  calc.error=s.floatError!=0;calc.step=s.floatSteps;
+  for(int i=0;i<4;++i)calc.st[i]=s.floatStack[i];
+  prismMode=s.prism!=0;currentView=static_cast<View>(s.view);
+  traceScreen=(currentView==View::Trace);
+  autoSleep=s.autoSleep!=0;
+  // Algorithm tracing uses dynamic storage and is deliberately not retained.
+  return true;
+}
+static bool lightSleepMs(uint32_t ms) {
+  Serial0.flush();
+  digitalWrite(LCD_BL,LOW);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  const esp_err_t configured=esp_sleep_enable_timer_wakeup(uint64_t(ms)*1000ULL);
+  if(configured!=ESP_OK) {
+    digitalWrite(LCD_BL,HIGH);
+    Serial0.printf("Light-sleep timer configuration failed: %d\r\n",(int)configured);
+    return false;
+  }
+  const esp_err_t result=esp_light_sleep_start();
+  digitalWrite(LCD_BL,HIGH);
+  if(result!=ESP_OK)Serial0.printf("Light sleep failed: %d\r\n",(int)result);
+  return result==ESP_OK;
+}
+static void deepSleepSeconds(uint32_t secs) {
+  saveRetainedState();
+  Serial0.printf("Saving RTC state; deep sleep for %lu seconds. USB UART cannot wake deep sleep.\r\n",(unsigned long)secs);
+  Serial0.flush();
+  digitalWrite(LCD_BL,LOW);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  const esp_err_t configured=esp_sleep_enable_timer_wakeup(uint64_t(secs)*1000000ULL);
+  if(configured!=ESP_OK) {
+    digitalWrite(LCD_BL,HIGH);
+    Serial0.printf("Deep-sleep timer configuration failed: %d\r\n",(int)configured);
+    return;
+  }
+  esp_deep_sleep_start(); // boot setup() restores retained snapshot
+}
+
 
 char input[256];
 size_t inputLen = 0;
@@ -211,6 +278,8 @@ void binary(double result) {
   calc.st[0]=result; calc.st[1]=calc.st[2]; calc.st[2]=calc.st[3];
 }
 void help() {
+  Serial0.println("Sleep: sleep status | sleep light [SECONDS] | sleep deep [SECONDS] | sleep auto on/off");
+  Serial0.println("Auto sleep is OFF by default: 100ms light-sleep slices after 100ms idle, deep sleep after 30s.");
   Serial0.println("Phase 7.14: dedicated black LVGL prism screen, BCD default.");
   Serial0.println("Trace: trace sin/cos/tan/atan/ln/exp VALUE");
   Serial0.println("Trace navigation: trace next | trace prev | trace jump N | trace show");
@@ -308,6 +377,36 @@ void execute(const char* tok) {
   calc.step++;status();
 }
 void runLine(char *line) {
+  if(strncmp(line,"sleep",5)==0 && (line[5]=='\0'||line[5]==' ')) {
+    if(strcmp(line,"sleep")==0 || strcmp(line,"sleep status")==0) {
+      Serial0.printf("Sleep: auto=%s, light idle=%lu ms, deep idle=%lu ms, deep timer=%lu s\r\n",
+        autoSleep?"ON":"OFF",(unsigned long)AUTO_LIGHT_IDLE_MS,
+        (unsigned long)AUTO_DEEP_IDLE_MS,(unsigned long)AUTO_DEEP_WAKE_SEC);
+      Serial0.println("Light sleep: timer wake, RAM retained. Deep sleep: RTC snapshot + timer reboot.");
+      Serial0.println("No USB wake from deep sleep. UART bytes can be lost during light sleep.");
+      return;
+    }
+    if(strcmp(line,"sleep auto on")==0) { autoSleep=true;lastInputMs=millis();Serial0.println("Auto sleep ON (experimental; UART bytes may be lost)");return; }
+    if(strcmp(line,"sleep auto off")==0) { autoSleep=false;lastInputMs=millis();Serial0.println("Auto sleep OFF");return; }
+    if(strncmp(line,"sleep light",11)==0 && (line[11]=='\0'||line[11]==' ')) {
+      const char* p=line+11;while(*p==' ')++p;
+      char* end=nullptr;
+      unsigned long sec=*p?strtoul(p,&end,10):2UL;
+      if((*p && (end==p || *end)) || sec<1 || sec>3600) {Serial0.println("Usage: sleep light [1..3600 seconds]");return;}
+      Serial0.printf("Light sleep %lu s; waking by timer...\r\n",sec);
+      if(lightSleepMs(uint32_t(sec)*1000U))Serial0.println("Woke from light sleep (RAM unchanged)");
+      lastInputMs=millis();show();return;
+    }
+    if(strncmp(line,"sleep deep",10)==0 && (line[10]=='\0'||line[10]==' ')) {
+      const char* p=line+10;while(*p==' ')++p;
+      char* end=nullptr;
+      unsigned long sec=*p?strtoul(p,&end,10):10UL;
+      if((*p && (end==p || *end)) || sec<1 || sec>86400) {Serial0.println("Usage: sleep deep [1..86400 seconds]");return;}
+      deepSleepSeconds(uint32_t(sec));return;
+    }
+    Serial0.println("Usage: sleep status | sleep light [seconds] | sleep deep [seconds] | sleep auto on/off");return;
+  }
+
   // Prism is a separate, intentionally black graphical mode: no LVGL draws
   // while the rotating X result is visible. Core RPN state is unaffected.
   if (strcmp(line,"display prism")==0 || strcmp(line,"display normal")==0) {
@@ -401,18 +500,26 @@ void runLine(char *line) {
 }
 void setup() {
   Serial0.begin(115200);
+  const bool wokeDeep=(esp_reset_reason()==ESP_RST_DEEPSLEEP);
+  const bool restored=wokeDeep && restoreRetainedState();
+  lastInputMs=millis();
   delay(2000);
   Serial0.println("HP-35 UART0 TEST");
   pinMode(LCD_BL, OUTPUT); digitalWrite(LCD_BL, HIGH);
   lcd->begin(40000000);
-  lcd->setRotation(0);
+  lcd->setRotation(prismMode ? 2 : 0);
 #if HP35_USE_LVGL
   hp35ui::begin(lcd);
 #endif
   hp35prism::begin(lcd);
+#if HP35_USE_LVGL
+  if(prismMode)hp35prism::setActive(true);
+#endif
   show();
   delay(300);
-  Serial0.println("\r\n=== HP-35 ESP32-S3 BCD debugger phase 5 ===");
+  Serial0.println("\r\n=== HP-35 ESP32-S3 phase 7.15 | SLEEP ===");
+  Serial0.printf("Boot: %s; RTC snapshot: %s\r\n",wokeDeep?"deep-sleep wake":"power/reset",restored?"RESTORED":"not restored");
+  if(restored)Serial0.println("BCD stack, entry mode, error, view and prism restored; trace history not retained.");
   help();status();
   Serial0.print("> ");
 }
@@ -435,5 +542,11 @@ void loop() {
       Serial0.print("> ");
     } else if(c=='\b'||c==127) {if(inputLen)inputLen--;}
     else if(c>=32 && inputLen<sizeof(input)-1) {input[inputLen++]=c;Serial0.write(c);}
+    lastInputMs=millis();
+  }
+  if(autoSleep && inputLen==0 && !Serial0.available()) {
+    const uint32_t idle=millis()-lastInputMs;
+    if(idle>=AUTO_DEEP_IDLE_MS)deepSleepSeconds(AUTO_DEEP_WAKE_SEC);
+    else if(idle>=AUTO_LIGHT_IDLE_MS)lightSleepMs(AUTO_LIGHT_SLICE_MS);
   }
 }
