@@ -23,7 +23,11 @@ bool RpnBCD::execute(const std::string &token) {
   std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
   if (cmd == "reset" || cmd == "clr") { reset(); return true; }
   if (cmd == "stack" || cmd == "regs" || cmd == "help") return true;
-  if (error) return false; // HP-35 error latch requires CLR
+  // Errors are reported for the failed operation only. A subsequent
+  // command starts with a clean error status while preserving the stack.
+  // Invalid operations will still report their own errors below.
+  error = false;
+  errorMessage.clear();
   try {
     if (!token.empty() && (std::isdigit(static_cast<unsigned char>(token[0])) ||
         token[0] == '.' || token[0] == '-' || token[0] == '+')) {
