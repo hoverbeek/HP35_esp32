@@ -319,7 +319,7 @@ void binary(double result) {
 }
 void help() {
   Serial0.println("Sleep: sleep status | sleep light [SECONDS] | sleep deep [SECONDS] | sleep auto on/off");
-  Serial0.println("Motion: motion status | motion sample | sleep motion [SECONDS]");
+  Serial0.println("Motion: motion status | motion scan | motion sample | sleep motion [SECONDS]");
   Serial0.println("Auto sleep is OFF by default: 100ms light-sleep slices after 100ms idle, deep sleep after 30s.");
   Serial0.println("Phase 7.14: dedicated black LVGL prism screen, BCD default.");
   Serial0.println("Trace: trace sin/cos/tan/atan/ln/exp VALUE");
@@ -419,11 +419,12 @@ void execute(const char* tok) {
 }
 void runLine(char *line) {
   if(strcmp(line,"motion")==0 || strcmp(line,"motion status")==0) {
-    Serial0.printf("QMI8658 %s, I2C=0x%02X, ID=0x%02X, SDA47 SCL48, INT1 GPIO46 / INT2 GPIO45\r\n",
-       motion.available()?"READY":"NOT DETECTED",motion.address(),motion.identity());
+    Serial0.printf("QMI8658 %s, I2C=0x%02X, ID=0x%02X, SDA%d SCL%d, INT1 GPIO46 / INT2 GPIO45\r\n",
+       motion.available()?"READY":"NOT DETECTED",motion.address(),motion.identity(),motion.sda(),motion.scl());
     Serial0.println("ESP32-S3 deep-sleep wake requires RTC GPIO0..21: onboard IMU interrupt pins are NOT eligible.");
     return;
   }
+  if(strcmp(line,"motion scan")==0){motion.scan(Serial0);return;}
   if(strcmp(line,"motion sample")==0){motionSample();return;}
   if(strncmp(line,"sleep motion",12)==0 && (line[12]=='\0'||line[12]==' ')) {
     unsigned seconds=15;char extra=0;
@@ -470,7 +471,7 @@ void runLine(char *line) {
     if(prismMode != wanted) {
       prismMode = wanted;
       lcd->setRotation(prismMode ? 2 : 0);
-  if(motion.begin()) Serial0.println("QMI8658 accelerometer ready (47/48)");
+  if(motion.begin()) Serial0.println("QMI8658 accelerometer ready");
   else Serial0.println("QMI8658 not detected; motion sleep disabled");
 #if HP35_USE_LVGL
       hp35prism::setActive(prismMode);
