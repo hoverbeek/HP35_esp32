@@ -56,7 +56,11 @@ bool prismMode = false;
 // cannot safely survive deep sleep.
 RTC_DATA_ATTR hp35sleep::Snapshot retainedState{};
 static bool autoSleep=false;
-static bool autoMotionSleep=false; // Explicit opt-in, never automatically deep-sleeps.
+static bool autoMotionSleep=false; // Experimental hardware IRQ sleep.
+static bool autoMotionConsoleSafe=false; // Active CPU; serial remains accessible.
+static hp35motion::Axes autoMotionBaseline{};
+static uint32_t lastMotionSampleMs=0;
+static constexpr uint32_t AUTO_MOTION_SAMPLE_MS=125;
 static bool autoMotionDark=false;
 static constexpr uint32_t AUTO_MOTION_IDLE_MS=5000;
 static constexpr uint32_t AUTO_MOTION_CHECK_SEC=2; // Timer wake to sample UART; UART itself cannot wake sleep.
@@ -438,7 +442,8 @@ void binary(double result) {
 void help() {
   Serial0.println("Power: power stats | power reset | power backlight on/off");
   Serial0.println("Sleep: sleep status | sleep light [SECONDS] | sleep deep [SECONDS] | sleep auto on/off");
-  Serial0.println("Auto motion: sleep auto motion on/off (idle 5 s; GPIO46 wakes, 2 s timer checks UART)");
+  Serial0.println("Auto motion: sleep auto motion on/off (UART-safe LCD blanking; CPU awake)");
+  Serial0.println("Experimental IRQ sleep: sleep auto motion irq on/off (UART input may be lost)");
   Serial0.println("Motion: motion status | motion scan | motion sample | sleep motion [SECONDS] | sleep motion irq [SECONDS]");
   Serial0.println("Auto sleep is OFF by default: 100ms light-sleep slices after 100ms idle, deep sleep after 30s.");
   Serial0.println("Phase 7.18: power diagnostics, LVGL prism screen, BCD default.");
@@ -578,23 +583,33 @@ void runLine(char *line) {
       Serial0.printf("Sleep: auto=%s, light idle=%lu ms, deep idle=%lu ms, deep timer=%lu s\r\n",
         autoSleep?"ON":"OFF",(unsigned long)AUTO_LIGHT_IDLE_MS,
         (unsigned long)AUTO_DEEP_IDLE_MS,(unsigned long)AUTO_DEEP_WAKE_SEC);
-      Serial0.printf("Auto motion: %s; idle=%lu ms, timer check=%lu s; no automatic deep sleep\r\n",
+      Serial0.printf("Auto motion IRQ: %s; idle=%lu ms, timer check=%lu s; no automatic deep sleep\r\n",
         autoMotionSleep?"ON":"OFF",(unsigned long)AUTO_MOTION_IDLE_MS,(unsigned long)AUTO_MOTION_CHECK_SEC);
+      Serial0.printf("Console-safe auto motion: %s; CPU stays awake for UART\r\n",autoMotionConsoleSafe?"ON":"OFF");
       Serial0.println("Light sleep: timer wake, RAM retained. Deep sleep: RTC snapshot + timer reboot.");
       Serial0.println("No USB wake from deep sleep. UART bytes can be lost during light sleep.");
       return;
     }
     if(strcmp(line,"sleep auto motion on")==0) {
       if(!motion.available() && !motion.begin()) {Serial0.println("QMI8658 unavailable; auto motion not enabled.");return;}
-      autoSleep=false;autoMotionSleep=true;autoMotionDark=false;lastInputMs=millis();
-      Serial0.println("Auto motion sleep ON (5 s idle; GPIO wake; serial bytes during sleep may be lost).");
+      if(!motion.read(autoMotionBaseline)) {Serial0.println("QMI8658 sample failed.");return;}
+      autoSleep=false;autoMotionSleep=false;autoMotionConsoleSafe=true;
+      autoMotionDark=false;lastMotionSampleMs=millis();lastInputMs=millis();restoreBacklight();
+      Serial0.println("Auto motion serial-safe ON: LCD off after 5 s; CPU stays awake for UART.");
       return;
     }
-    if(strcmp(line,"sleep auto motion off")==0) {
-      autoMotionSleep=false;autoMotionDark=false;lastInputMs=millis();restoreBacklight();
-      Serial0.println("Auto motion sleep OFF");return;
+    if(strcmp(line,"sleep auto motion irq on")==0) {
+      if(!motion.available() && !motion.begin()) {Serial0.println("QMI8658 unavailable; IRQ sleep not enabled.");return;}
+      autoSleep=false;autoMotionConsoleSafe=false;autoMotionSleep=true;autoMotionDark=false;lastInputMs=millis();restoreBacklight();
+      Serial0.println("EXPERIMENTAL IRQ auto sleep ON: serial input may be lost. Reset to recover.");
+      return;
     }
-    if(strcmp(line,"sleep auto on")==0) { autoMotionSleep=false;autoMotionDark=false;restoreBacklight();autoSleep=true;lastInputMs=millis();Serial0.println("Auto sleep ON (experimental; UART bytes may be lost)");return; }
+    if(strcmp(line,"sleep auto motion off")==0 || strcmp(line,"sleep auto motion irq off")==0) {
+      autoMotionSleep=false;autoMotionConsoleSafe=false;autoMotionDark=false;
+      lastInputMs=millis();restoreBacklight();
+      Serial0.println("Auto motion OFF");return;
+    }
+    if(strcmp(line,"sleep auto on")==0) { autoMotionConsoleSafe=false;autoMotionSleep=false;autoMotionDark=false;restoreBacklight();autoSleep=true;lastInputMs=millis();Serial0.println("Auto sleep ON (experimental; UART bytes may be lost)");return; }
     if(strcmp(line,"sleep auto off")==0) { autoSleep=false;lastInputMs=millis();Serial0.println("Auto sleep OFF");return; }
     if(strncmp(line,"sleep light",11)==0 && (line[11]=='\0'||line[11]==' ')) {
       const char* p=line+11;while(*p==' ')++p;
@@ -612,7 +627,7 @@ void runLine(char *line) {
       if((*p && (end==p || *end)) || sec<1 || sec>86400) {Serial0.println("Usage: sleep deep [1..86400 seconds]");return;}
       deepSleepSeconds(uint32_t(sec));return;
     }
-    Serial0.println("Usage: sleep status | sleep light [seconds] | sleep deep [seconds] | sleep auto on/off | sleep auto motion on/off");return;
+    Serial0.println("Usage: sleep status | sleep light [seconds] | sleep deep [seconds] | sleep auto on/off | sleep auto motion on/off | sleep auto motion irq on/off");return;
   }
 
   // Prism is a separate, intentionally black graphical mode: no LVGL draws
@@ -769,6 +784,28 @@ void loop() {
   }
   // Auto WoM never deep-sleeps. GPIO46 cannot wake the ESP32-S3 from deep sleep.
   // The 2-second timer acts as a bounded serial-activity checkpoint.
+  // UART-safe mode: blank only the LCD; don't put the MCU/UART to sleep.
+  if(autoMotionConsoleSafe && inputLen==0) {
+    const uint32_t now=millis();
+    if(!autoMotionDark && uint32_t(now-lastInputMs)>=AUTO_MOTION_IDLE_MS) {
+      if(motion.read(autoMotionBaseline)) {
+        autoMotionDark=true;digitalWrite(LCD_BL,LOW);lastMotionSampleMs=now;
+      } else {
+        autoMotionConsoleSafe=false;Serial0.println("Auto motion disabled: QMI8658 read error.");
+      }
+    }
+    if(autoMotionDark && uint32_t(now-lastMotionSampleMs)>=AUTO_MOTION_SAMPLE_MS) {
+      lastMotionSampleMs=now;
+      hp35motion::Axes sample{};
+      if(!motion.read(sample)) {
+        autoMotionConsoleSafe=false;autoMotionDark=false;restoreBacklight();
+        Serial0.println("Auto motion disabled: QMI8658 read error.");
+      } else if(hp35motion::delta(sample,autoMotionBaseline)>=MOTION_THRESHOLD) {
+        autoMotionDark=false;restoreBacklight();lastInputMs=now;
+        Serial0.println("Motion detected: LCD awake.");
+      }
+    }
+  }
   if(autoMotionSleep && inputLen==0 && !Serial0.available() &&
      (autoMotionDark || uint32_t(millis()-lastInputMs)>=AUTO_MOTION_IDLE_MS)) {
     autoMotionDark=true;
