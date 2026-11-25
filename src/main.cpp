@@ -446,7 +446,7 @@ void status() {
     Serial0.printf("X=%s Y=%s Z=%s T=%s | step=%lu%s\r\n",
       bcdCalc.st[0].toString().c_str(), bcdCalc.st[1].toString().c_str(),
       bcdCalc.st[2].toString().c_str(), bcdCalc.st[3].toString().c_str(),
-      bcdCalc.step, bcdCalc.error ? " ERROR (CLR required)" : "");
+      bcdCalc.step, bcdCalc.error ? " ERROR (next command clears)" : "");
     show(); return;
   }
   Serial0.printf("X=% .12g Y=% .12g Z=% .12g T=% .12g | step=%lu%s\r\n",
