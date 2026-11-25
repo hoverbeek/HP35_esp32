@@ -854,7 +854,6 @@ void loop() {
       while(Serial0.available()) Serial0.read();
       inputLen=0;
       Serial0.println("UART wake acknowledged. UART0 driver restarted; send a NEW command.");
-      Serial0.print("> ");
     }
     if(result!=0) {
       autoMotionDark=false; restoreBacklight();lastInputMs=millis();
@@ -862,8 +861,9 @@ void loop() {
         wakeGraceUntilMs=millis()+WAKE_GRACE_MS;
         if(result==1) {
           Serial0.println("Motion wake acknowledged. Serial console ready for 30 seconds.");
-          Serial0.print("> ");
         } else Serial0.println("Staying awake for 30 seconds after UART wake.");
+        // The prompt must be the LAST text after either wake-up message.
+        Serial0.print("> ");
       }
       if(result<0) {
         autoMotionSleep=false;autoMotionUartWake=false;
