@@ -1,3 +1,34 @@
+# HP-35 Phase 7.19 — automatic interrupt-driven motion sleep
+
+Based on hardware-validated Phase 7.18. **Off by default.** Existing one-shot
+sleep commands and the older `sleep auto on/off` are retained.
+
+## New commands
+
+- `sleep auto motion on`: enter motion-interrupt-driven light sleep after **5 seconds** of no serial input. The LCD backlight is off during sleep, including timer check-ins. QMI8658 INT1 on ESP32-S3 GPIO46 wakes the board when picked up.
+- `sleep auto motion off`: disable the automatic mode and restore the backlight.
+- `sleep status`: show whether automatic motion sleep is enabled.
+
+The 2-second **timer check-ins** allow buffered UART data to be inspected, but **serial bytes sent while sleeping can still be lost**: UART0 is not configured as a hardware light-sleep wake source. Motion is the reliable wake mechanism. If needed, pick up the board before typing. This mode deliberately **never enters deep sleep**, because GPIO46 is not an RTC wake pin on the ESP32-S3. The older `sleep auto on` behavior is unchanged, except that activating it turns off the new motion mode.
+
+The serial console now suppresses the extra prompt caused by CR+LF after each command. Backspace echo from Phase 7.18 is preserved. LCD debugger top-right label shows **P7.19**.
+
+## Hardware test
+
+1. Upload/monitor; check LCD says `P7.19`.
+2. Type `1 2 3 4` and `sleep status`.
+3. Type `sleep auto motion on` and leave the board untouched for 5+ seconds: screen should go dark.
+4. Wait several additional seconds; timer check-ins must **not** flash the backlight.
+5. Pick up the board: screen should light up and X/Y/Z/T should still read 4/3/2/1.
+6. Type `power stats`: GPIO wake count increases; timer wake count may also increase due to check-ins.
+7. Type `sleep auto motion off` shortly after wake, or wake with motion before typing if the screen is dark.
+8. Confirm serial prompt is `> `, not `> > `; test Backspace.
+9. Check `sleep motion irq 15` and `sleep deep 10` still work manually with retained state.
+
+**Unverified:** needs PlatformIO compilation and physical hardware test. Main branch stays on stable Phase 7.18 until testing and merging.
+
+---
+
 # HP-35 Phase 7.18 — power diagnostics and backlight control
 
 **Built on merged and hardware-tested Phase 7.17.** The hardware QMI8658
