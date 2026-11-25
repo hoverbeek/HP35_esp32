@@ -1,3 +1,22 @@
+# Phase 7.16 — QMI8658 motion-aware light sleep
+
+- Motion sensor: QMI8658 at I2C GPIO47/48. INT1=GPIO46 and INT2=GPIO45.
+- ESP32-S3 RTC deep-sleep wake supports GPIO0..21, so onboard IMU interrupts
+  cannot directly wake this ESP32-S3 from deep sleep without extra hardware.
+- New commands: motion status, motion sample, sleep motion 15.
+- sleep motion N uses LIGHT sleep with 125 ms timer sampling, detects a change
+  in accelerometer axis reading, and resumes the calculator.
+- Existing 7.15 deep sleep with RTC register retention stays unchanged.
+- First test: motion status, motion sample, then sleep motion 15 and lift board.
+- Source not yet compiled on PlatformIO nor tested on real board.
+
+References:
+https://www.waveshare.com/wiki/ESP32-S3-LCD-1.3
+https://spotpear.com/index.php/wiki/ESP32-S3-1.3-inch-LCD-ST7789-240x240-Display-Screen.html
+https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/system/sleep_modes.html
+
+---
+
 # Phase 7.15 — ESP32-S3 sleep and RTC register retention
 
 Based on Phase 7.14, with `sleep status`, `sleep light [seconds]`,
