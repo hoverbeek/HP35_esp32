@@ -59,8 +59,8 @@ RTC_DATA_ATTR hp35sleep::Snapshot retainedState{};
 static bool autoSleep=false;
 static bool autoMotionSleep=false; // Experimental hardware IRQ light sleep.
 static bool autoMotionUartWake=false; // Phase 7.20: UART0 also wakes light sleep.
-static uint32_t uartGraceUntilMs=0;
-static constexpr uint32_t UART_WAKE_GRACE_MS=15000;
+static uint32_t wakeGraceUntilMs=0;
+static constexpr uint32_t WAKE_GRACE_MS=30000;
 static constexpr int UART_WAKE_EDGE_THRESHOLD=3;
 static bool autoMotionConsoleSafe=false; // Active CPU; serial remains accessible.
 static hp35motion::Axes autoMotionBaseline{};
@@ -596,8 +596,8 @@ void runLine(char *line) {
       Serial0.printf("Auto motion IRQ: %s; idle=%lu ms, timer check=%lu s; no automatic deep sleep\r\n",
         autoMotionSleep?"ON":"OFF",(unsigned long)AUTO_MOTION_IDLE_MS,(unsigned long)AUTO_MOTION_CHECK_SEC);
       Serial0.printf("Console-safe auto motion: %s; CPU stays awake for UART\r\n",autoMotionConsoleSafe?"ON":"OFF");
-      Serial0.printf("UART0 wake-up in auto IRQ sleep: %s (edge threshold=%d, post-wake grace=%lu s)\r\n",
-        autoMotionUartWake?"ON":"OFF",UART_WAKE_EDGE_THRESHOLD,(unsigned long)(UART_WAKE_GRACE_MS/1000));
+      Serial0.printf("UART0 wake-up in auto IRQ sleep: %s (edge threshold=%d, GPIO/UART wake grace=%lu s)\r\n",
+        autoMotionUartWake?"ON":"OFF",UART_WAKE_EDGE_THRESHOLD,(unsigned long)(WAKE_GRACE_MS/1000));
       Serial0.println("Light sleep: timer wake, RAM retained. Deep sleep: RTC snapshot + timer reboot.");
       Serial0.println("No USB wake from deep sleep. UART bytes can be lost during light sleep.");
       return;
@@ -830,8 +830,8 @@ void loop() {
       }
     }
   }
-  const bool uartGraceActive=autoMotionUartWake && (int32_t)(millis()-uartGraceUntilMs)<0;
-  if(autoMotionSleep && !uartGraceActive && inputLen==0 && !Serial0.available() &&
+  const bool wakeGraceActive=(int32_t)(millis()-wakeGraceUntilMs)<0;
+  if(autoMotionSleep && !wakeGraceActive && inputLen==0 && !Serial0.available() &&
      (autoMotionDark || uint32_t(millis()-lastInputMs)>=AUTO_MOTION_IDLE_MS)) {
     autoMotionDark=true;
     const int result=lightSleepMotionIRQ(AUTO_MOTION_CHECK_SEC,true,autoMotionUartWake);
@@ -839,12 +839,18 @@ void loop() {
       // Discard the intentional UART wake preamble; its bytes are not guaranteed.
       while(Serial0.available()) Serial0.read();
       inputLen=0;
-      uartGraceUntilMs=millis()+UART_WAKE_GRACE_MS;
-      Serial0.println("UART wake acknowledged. Send command within 15 seconds.");
+      Serial0.println("UART wake acknowledged. Serial console ready.");
       Serial0.print("> ");
     }
     if(result!=0) {
       autoMotionDark=false; restoreBacklight();lastInputMs=millis();
+      if(result==1 || result==2) {
+        wakeGraceUntilMs=millis()+WAKE_GRACE_MS;
+        if(result==1) {
+          Serial0.println("Motion wake acknowledged. Serial console ready for 30 seconds.");
+          Serial0.print("> ");
+        } else Serial0.println("Staying awake for 30 seconds after UART wake.");
+      }
       if(result<0) {
         autoMotionSleep=false;autoMotionUartWake=false;
         Serial0.println("Auto motion sleep disabled after sensor/wake error.");
