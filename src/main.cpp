@@ -81,18 +81,31 @@ static void lightSleepMotion(uint32_t seconds) {
      (unsigned long)seconds,(unsigned long)MOTION_THRESHOLD);
   Serial0.flush();
   const uint32_t started=millis();
-  bool moved=false,failed=false;
-  // Wake by timer every 125 ms, take an I2C reading, then sleep again.
+  bool moved=false,failed=false,serialCancel=false;
+  uint32_t samples=0,peakDelta=0;
+  // Timer-driven light sleep: sample accelerometer after each 125ms wake.
   while(uint32_t(millis()-started)<seconds*1000UL) {
     if(!lightSleepMs(MOTION_INTERVAL_MS)){failed=true;break;}
     hp35motion::Axes a{};
     if(!motion.read(a)){failed=true;break;}
-    if(hp35motion::delta(a,baseline)>=MOTION_THRESHOLD){moved=true;break;}
-    if(Serial0.available())break;
+    ++samples;
+    const uint32_t change=hp35motion::delta(a,baseline);
+    if(change>peakDelta)peakDelta=change;
+    if(change>=MOTION_THRESHOLD){moved=true;break;}
+    // The serial monitor may leave LF pending after CR ran the command.
+    // Ignore CR/LF; only non-newline input should cancel this watch.
+    while(Serial0.available() && (Serial0.peek()=='\r'||Serial0.peek()=='\n')) {
+      Serial0.read();
+    }
+    if(Serial0.available()){serialCancel=true;break;}
   }
+  Serial0.printf("Motion watch: elapsed=%lu ms, samples=%lu, peak delta=%lu (trigger=%lu)\r\n",
+    (unsigned long)(millis()-started),(unsigned long)samples,
+    (unsigned long)peakDelta,(unsigned long)MOTION_THRESHOLD);
   if(moved)Serial0.println("Movement detected: calculator awake");
   else if(failed)Serial0.println("Sleep or QMI8658 read error");
-  else Serial0.println("Motion watch ended (timer or serial input)");
+  else if(serialCancel)Serial0.println("Motion watch cancelled by serial input");
+  else Serial0.println("Motion watch timed out: no threshold crossing");
   lastInputMs=millis();
   show();
 }
