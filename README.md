@@ -1,3 +1,23 @@
+## Phase 7.20 follow-up: motion wake serial-access fix
+
+Hardware testing revealed that QMI8658 GPIO wake (`cause=7`) worked, but
+the calculator re-entered light sleep too quickly to type a command.
+Now **both UART wake (`cause=8`) and motion wake (`cause=7`) keep the MCU
+awake for 30 seconds**, and both provide a fresh serial prompt.
+
+After flashing, test `sleep auto motion uart on`, let it sleep and pick
+up the board. Wait for `Motion wake acknowledged. Serial console ready for
+30 seconds.`, then immediately enter `sleep status` and
+`sleep auto motion uart off`. The same 30-second window applies to UART
+wake (send `~~~~~~` to wake first). The clock is refreshed on subsequent
+serial input; while a command is being typed the normal input buffer
+prevents automatic sleep.
+
+This patch is committed but needs compilation and physical validation.
+`main` remains at Phase 7.19.
+
+---
+
 # Phase 7.20 — experimental UART0 + accelerometer light-sleep wake
 
 Built on the merged and tested Phase 7.19. No changes to the BCD engine,
