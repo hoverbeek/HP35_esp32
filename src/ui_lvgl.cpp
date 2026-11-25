@@ -95,7 +95,7 @@ void begin(Arduino_GFX *physical) {
   lv_obj_set_style_pad_all(root,0,0);
   lv_obj_clear_flag(root,LV_OBJ_FLAG_SCROLLABLE);
   titleLabel=label(root,"HP-35 DEBUGGER",8,8,180,20,0x173D60);
-  versionLabel=label(root,"P7.14",202,8,38,20,0x173D60);
+  versionLabel=label(root,"P7.18",202,8,38,20,0x173D60);
   for(int i=0;i<4;i++) {
     tabs[i]=lv_obj_create(root);
     lv_obj_set_pos(tabs[i],5+i*58,32);
