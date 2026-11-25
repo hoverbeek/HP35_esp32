@@ -102,6 +102,42 @@ public:
   output.printf("QMI8658 result: %s, SDA=%u SCL=%u, address=0x%02X ID=0x%02X, last I2C code=%u\r\n",
    ok_?"READY":"NOT DETECTED",(unsigned)sda_,(unsigned)scl_,addr_,id_,lastError_);
  }
+
+ // QMI8658A hardware Wake-on-Motion (WoM): INT1, active HIGH on GPIO46.
+ // Assumes GPIO46 input is wired to QMI8658 INT1 as per Waveshare schematic.
+ // Registers/CTRL9 handshake follow QMI8658A datasheet. Experimental hardware mode.
+ bool startWakeOnMotion(uint8_t thresholdMg=150) {
+  if(!ok_)return false;
+  // Stop sensors before programming the dedicated low-power WoM engine.
+  if(!writeReg(0x08,0x00))return false; // CTRL7 disable accel and gyro
+  if(!writeReg(0x03,0x0C))return false; // CTRL2: 2g + low-power 128Hz
+  if(!writeReg(0x0B,thresholdMg))return false; // CAL1_L: 1mg/LSB
+  if(!writeReg(0x0C,0x20))return false; // CAL1_H: INT1 initially LOW, 32 sample blanking
+  if(!writeReg(0x0A,0x08))return false; // CTRL9 WRITE_WOM_SETTING
+  uint8_t status=0;
+  bool ack=false;
+  const uint32_t deadline=millis()+250;
+  while((int32_t)(millis()-deadline)<0) {
+   if(readReg(0x2D,&status,1) && (status&0x80)) {ack=true;break;}
+   delay(2);
+  }
+  if(!ack)return false;
+  if(!writeReg(0x0A,0x00))return false; // CTRL9 acknowledge command
+  const uint32_t clearDeadline=millis()+250;
+  while((int32_t)(millis()-clearDeadline)<0) {
+   if(readReg(0x2D,&status,1) && !(status&0x80))break;
+   delay(2);
+  }
+  // Enable INT1 and register-address auto-increment while preserving other CTRL1 flags.
+  uint8_t ctrl1=0;
+  if(!readReg(0x02,&ctrl1,1))return false;
+  if(!writeReg(0x02,ctrl1|0x48))return false; // CTRL1 bits 6 (ADDR_AI) and 3 (INT1_EN)
+  if(!writeReg(0x08,0x01))return false; // CTRL7 accel enabled, gyro off
+  delay(40);
+  return true;
+ }
+ // Re-initialize the normal accelerometer after leaving WoM mode.
+ bool stopWakeOnMotion() { return begin(); }
  bool available()const{return ok_;}
  uint8_t address()const{return addr_;}
  uint8_t identity()const{return id_;}
