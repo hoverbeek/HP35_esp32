@@ -60,7 +60,7 @@ static constexpr uint32_t AUTO_DEEP_IDLE_MS=30000;
 static constexpr uint32_t AUTO_LIGHT_SLICE_MS=100;
 static constexpr uint32_t AUTO_DEEP_WAKE_SEC=10;
 void show();
-static bool lightSleepMs(uint32_t ms);
+static bool lightSleepMs(uint32_t ms, bool restoreBacklight=true);
 static hp35motion::QMI8658 motion;
 static constexpr uint32_t MOTION_THRESHOLD=1200;
 static constexpr uint32_t MOTION_INTERVAL_MS=125;
@@ -74,18 +74,22 @@ static void motionSample() {
     a.x,a.y,a.z,a.x/16384.0,a.y/16384.0,a.z/16384.0);
 }
 static void lightSleepMotion(uint32_t seconds) {
-  if(!motion.available()) {Serial0.println("Motion not available");return;}
+  if(!motion.available()) {
+    Serial0.println("Motion sensor not initialized: attempting QMI8658 initialization...");
+    if(!motion.begin()) {Serial0.println("QMI8658 initialization failed. Run motion scan.");return;}
+  }
   hp35motion::Axes baseline{};
   if(!motion.read(baseline)){Serial0.println("Motion baseline failed");return;}
   Serial0.printf("Light sleep motion watch %lu s, threshold=%lu raw axis counts\r\n",
      (unsigned long)seconds,(unsigned long)MOTION_THRESHOLD);
   Serial0.flush();
+  digitalWrite(LCD_BL,LOW); // Stay dark across ALL timer wakeups.
   const uint32_t started=millis();
   bool moved=false,failed=false,serialCancel=false;
   uint32_t samples=0,peakDelta=0;
   // Timer-driven light sleep: sample accelerometer after each 125ms wake.
   while(uint32_t(millis()-started)<seconds*1000UL) {
-    if(!lightSleepMs(MOTION_INTERVAL_MS)){failed=true;break;}
+    if(!lightSleepMs(MOTION_INTERVAL_MS,false)){failed=true;break;}
     hp35motion::Axes a{};
     if(!motion.read(a)){failed=true;break;}
     ++samples;
@@ -106,6 +110,7 @@ static void lightSleepMotion(uint32_t seconds) {
   else if(failed)Serial0.println("Sleep or QMI8658 read error");
   else if(serialCancel)Serial0.println("Motion watch cancelled by serial input");
   else Serial0.println("Motion watch timed out: no threshold crossing");
+  digitalWrite(LCD_BL,HIGH); // Restore only after movement, timeout or error.
   lastInputMs=millis();
   show();
 }
@@ -135,18 +140,18 @@ static bool restoreRetainedState() {
   // Algorithm tracing uses dynamic storage and is deliberately not retained.
   return true;
 }
-static bool lightSleepMs(uint32_t ms) {
+static bool lightSleepMs(uint32_t ms, bool restoreBacklight) {
   Serial0.flush();
   digitalWrite(LCD_BL,LOW);
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   const esp_err_t configured=esp_sleep_enable_timer_wakeup(uint64_t(ms)*1000ULL);
   if(configured!=ESP_OK) {
-    digitalWrite(LCD_BL,HIGH);
+    if(restoreBacklight) digitalWrite(LCD_BL,HIGH);
     Serial0.printf("Light-sleep timer configuration failed: %d\r\n",(int)configured);
     return false;
   }
   const esp_err_t result=esp_light_sleep_start();
-  digitalWrite(LCD_BL,HIGH);
+  if(restoreBacklight) digitalWrite(LCD_BL,HIGH);
   if(result!=ESP_OK)Serial0.printf("Light sleep failed: %d\r\n",(int)result);
   return result==ESP_OK;
 }
@@ -484,8 +489,6 @@ void runLine(char *line) {
     if(prismMode != wanted) {
       prismMode = wanted;
       lcd->setRotation(prismMode ? 2 : 0);
-  if(motion.begin()) Serial0.println("QMI8658 accelerometer ready");
-  else Serial0.println("QMI8658 not detected; motion sleep disabled");
 #if HP35_USE_LVGL
       hp35prism::setActive(prismMode);
 #else
@@ -580,6 +583,8 @@ void setup() {
   pinMode(LCD_BL, OUTPUT); digitalWrite(LCD_BL, HIGH);
   lcd->begin(40000000);
   lcd->setRotation(prismMode ? 2 : 0);
+  if(motion.begin()) Serial0.printf("QMI8658 accelerometer ready (0x%02X)\r\n",motion.address());
+  else Serial0.println("QMI8658 not detected at boot. Try motion scan.");
 #if HP35_USE_LVGL
   hp35ui::begin(lcd);
 #endif
