@@ -20,6 +20,7 @@
 #include <Wire.h>
 #include "motion_qmi8658.h"
 #include <esp_sleep.h>
+#include <driver/gpio.h>
 #include <esp_system.h>
 #include "sleep_state.h"
 #include <stdlib.h>
@@ -115,6 +116,63 @@ static void lightSleepMotion(uint32_t seconds) {
   show();
 }
 
+
+// Experimental interrupt-driven wake from LIGHT sleep.
+// Unlike the previous motion watch, the CPU does not poll the I2C sensor.
+// GPIO46 is a digital-only pin: it works for light-sleep GPIO wake, NOT deep sleep.
+static void lightSleepMotionIRQ(uint32_t seconds) {
+  if(!motion.available() && !motion.begin()) {
+    Serial0.println("QMI8658 unavailable. Use motion scan or sleep motion 15.");
+    return;
+  }
+  const gpio_num_t irq=GPIO_NUM_46; // QMI8658 INT1
+  pinMode(46,INPUT);
+  Serial0.printf("Phase 7.17 WoM: INT1(GPIO46), threshold=150 mg, timer fallback=%lu s\r\n",
+    (unsigned long)seconds);
+  if(!motion.startWakeOnMotion(150)) {
+    Serial0.println("QMI8658 WoM configuration failed; restoring normal sensor.");
+    motion.stopWakeOnMotion();
+    return;
+  }
+  const int before=digitalRead(46);
+  Serial0.printf("INT1 level before sleep: %d (expected 0)\r\n",before);
+  if(before!=LOW) {
+    Serial0.println("INT1 already HIGH; interrupt sleep aborted to prevent immediate wake.");
+    motion.stopWakeOnMotion();
+    return;
+  }
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  esp_err_t err=gpio_wakeup_enable(irq,GPIO_INTR_HIGH_LEVEL);
+  if(err==ESP_OK)err=esp_sleep_enable_gpio_wakeup();
+  if(err==ESP_OK)err=esp_sleep_enable_timer_wakeup(uint64_t(seconds)*1000000ULL);
+  if(err!=ESP_OK) {
+    Serial0.printf("GPIO/timer wake setup failed: %d\r\n",(int)err);
+    gpio_wakeup_disable(irq);
+    motion.stopWakeOnMotion();
+    return;
+  }
+  // Keep black for the entire light sleep, only enable backlight after wake.
+  Serial0.println("Entering interrupt-driven light sleep; pick up the board to wake.");
+  Serial0.flush();
+  digitalWrite(LCD_BL,LOW);
+  const uint32_t started=millis();
+  err=esp_light_sleep_start();
+  const esp_sleep_wakeup_cause_t cause=esp_sleep_get_wakeup_cause();
+  const int level=digitalRead(46);
+  digitalWrite(LCD_BL,HIGH);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  gpio_wakeup_disable(irq);
+  const bool recovered=motion.stopWakeOnMotion();
+  Serial0.printf("IRQ wake: err=%d cause=%d INT1=%d elapsed=%lu ms; sensor=%s\r\n",
+    (int)err,(int)cause,level,(unsigned long)(millis()-started),
+    recovered?"READY":"NOT READY");
+  if(err!=ESP_OK) Serial0.println("Light sleep failed.");
+  else if(cause==ESP_SLEEP_WAKEUP_GPIO) Serial0.println("Hardware motion interrupt woke the calculator!");
+  else if(cause==ESP_SLEEP_WAKEUP_TIMER) Serial0.println("Safety timer expired (no GPIO wake).");
+  else Serial0.println("Wake cause was neither GPIO nor timer; check hardware.");
+  lastInputMs=millis();
+  show();
+}
 
 static void saveRetainedState() {
   auto &s=retainedState;
@@ -337,7 +395,7 @@ void binary(double result) {
 }
 void help() {
   Serial0.println("Sleep: sleep status | sleep light [SECONDS] | sleep deep [SECONDS] | sleep auto on/off");
-  Serial0.println("Motion: motion status | motion scan | motion sample | sleep motion [SECONDS]");
+  Serial0.println("Motion: motion status | motion scan | motion sample | sleep motion [SECONDS] | sleep motion irq [SECONDS]");
   Serial0.println("Auto sleep is OFF by default: 100ms light-sleep slices after 100ms idle, deep sleep after 30s.");
   Serial0.println("Phase 7.14: dedicated black LVGL prism screen, BCD default.");
   Serial0.println("Trace: trace sin/cos/tan/atan/ln/exp VALUE");
@@ -444,6 +502,13 @@ void runLine(char *line) {
   }
   if(strcmp(line,"motion scan")==0){motion.scan(Serial0);return;}
   if(strcmp(line,"motion sample")==0){motionSample();return;}
+  if(strncmp(line,"sleep motion irq",16)==0 && (line[16]=='\0'||line[16]==' ')) {
+    unsigned seconds=15;char extra=0;
+    if(line[16]==' ' && (sscanf(line+17,"%u %c",&seconds,&extra)!=1 || seconds<1 || seconds>120)) {
+      Serial0.println("Usage: sleep motion irq [1..120 seconds]");return;
+    }
+    lightSleepMotionIRQ(seconds);return;
+  }
   if(strncmp(line,"sleep motion",12)==0 && (line[12]=='\0'||line[12]==' ')) {
     unsigned seconds=15;char extra=0;
     if(line[12]==' ' && (sscanf(line+13,"%u %c",&seconds,&extra)!=1 || seconds<1 || seconds>120)) {
@@ -594,7 +659,7 @@ void setup() {
 #endif
   show();
   delay(300);
-  Serial0.println("\r\n=== HP-35 ESP32-S3 phase 7.16 | MOTION SLEEP ===");
+  Serial0.println("\r\n=== HP-35 ESP32-S3 phase 7.17 | MOTION INTERRUPT ===");
   Serial0.printf("Boot: %s; RTC snapshot: %s\r\n",wokeDeep?"deep-sleep wake":"power/reset",restored?"RESTORED":"not restored");
   if(restored)Serial0.println("BCD stack, entry mode, error, view and prism restored; trace history not retained.");
   help();status();

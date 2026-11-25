@@ -1,3 +1,32 @@
+# HP-35 Phase 7.17 — hardware motion interrupt (experimental)
+
+7.16 remains on main. This feature branch adds `sleep motion irq 15`
+using QMI8658A's hardware Wake-on-Motion mode (150 mg threshold),
+interrupt INT1 -> ESP32-S3 GPIO46 and `esp_sleep_enable_gpio_wakeup()`.
+The ESP32-S3 stays in **light sleep** until GPIO46 goes HIGH or a
+safety timer expires. It does **not** wake from deep sleep.
+
+## Test
+1. Compile with PlatformIO; run `motion status`.
+2. Run `sleep motion irq 15`. The LCD backlight should remain off.
+3. Pick up the board. Expect `Hardware motion interrupt woke the calculator!`.
+4. If the interrupt is already HIGH, the operation aborts safely.
+5. If no interrupt arrives, the 15-second timer wakes the ESP32.
+6. Verify stack and `motion sample` still work.
+7. Existing `sleep motion 15` (7.16 polling) remains an unchanged fallback.
+
+Status: **not compiled or tested on the physical board**. QMI8658 WoM
+register initialization and GPIO interrupt polarity should be validated
+against the hardware; do not merge until tested.
+
+QMI8658 wake-on-motion config based on QST datasheet and SensorLib
+documentation:
+https://www.qstcorp.com/upload/pdf/202301/13-52-25%20QMI8658A%20Datasheet%20Rev%20A.pdf
+https://raw.githubusercontent.com/lewisxhe/SensorLib/master/src/SensorQMI8658.hpp
+https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/system/sleep_modes.html
+
+---
+
 # Phase 7.16 — QMI8658 motion-aware light sleep
 
 - Motion sensor: QMI8658 at I2C GPIO47/48. INT1=GPIO46 and INT2=GPIO45.
