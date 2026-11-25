@@ -200,6 +200,19 @@ static int lightSleepMotionIRQ(uint32_t seconds, bool automatic=false, bool uart
   const uint32_t started=millis();
   err=esp_light_sleep_start();
   const esp_sleep_wakeup_cause_t cause=esp_sleep_get_wakeup_cause();
+  // UART light-sleep wake uses RX edge detection rather than normal
+  // character reception. Reset the Arduino UART0 driver on UART wake so
+  // its RX interrupts/ring buffer are in a known running state before
+  // telling the host that it may send the real command.
+  // This is intentionally limited to UART wake; GPIO motion wake remains
+  // on the proven, unmodified serial path.
+  if(uartWake && cause==ESP_SLEEP_WAKEUP_UART && err==ESP_OK) {
+    Serial0.flush();
+    Serial0.end();
+    delay(20);
+    Serial0.begin(115200);
+    delay(20);
+  }
   const int level=digitalRead(46);
   if(!automatic || err!=ESP_OK || cause!=ESP_SLEEP_WAKEUP_TIMER) restoreBacklight();
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
@@ -836,10 +849,11 @@ void loop() {
     autoMotionDark=true;
     const int result=lightSleepMotionIRQ(AUTO_MOTION_CHECK_SEC,true,autoMotionUartWake);
     if(result==2) {
-      // Discard the intentional UART wake preamble; its bytes are not guaranteed.
+      // Discard the intentional UART wake preamble. The next user command
+      // must be sent AFTER the wake acknowledgment, not in the same burst.
       while(Serial0.available()) Serial0.read();
       inputLen=0;
-      Serial0.println("UART wake acknowledged. Serial console ready.");
+      Serial0.println("UART wake acknowledged. UART0 driver restarted; send a NEW command.");
       Serial0.print("> ");
     }
     if(result!=0) {
