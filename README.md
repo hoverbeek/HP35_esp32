@@ -1,3 +1,29 @@
+## Phase 7.20 follow-up: UART input recovery after wake
+
+Hardware testing showed that ESP32-S3 reported UART wake (`cause=8`) and
+printed the 30-second grace message, but subsequent PlatformIO Monitor input
+could become unresponsive. After **UART wake only**, firmware now flushes
+TX, closes and reopens Arduino `Serial0` at 115200 baud, before displaying
+the acknowledgment. The GPIO motion-wake path is deliberately unchanged.
+This is an **experimental driver recovery**, not yet verified on hardware.
+
+### Test the fix
+
+1. Reset ESP32 and flash the latest branch.
+2. Run `sleep auto motion uart on`; allow it to enter light sleep.
+3. Send `~~~~~~` + Enter as a standalone wake preamble.
+4. Wait for `UART wake acknowledged. UART0 driver restarted; send a NEW command.`
+5. **Then**, separately enter `sleep status` and
+   `sleep auto motion uart off`, within the 30-second awake window.
+6. If serial remains stuck, press RESET; normal safe mode is off by default.
+   Report whether the monitor displays any echo or responds to another
+   `~~~~~~` + Enter.
+
+**Do not merge this branch yet.** Verify serial input after UART wake on
+the Waveshare hardware first.
+
+---
+
 ## Phase 7.20 follow-up: motion wake serial-access fix
 
 Hardware testing revealed that QMI8658 GPIO wake (`cause=7`) worked, but
