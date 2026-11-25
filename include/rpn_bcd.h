@@ -16,6 +16,8 @@ public:
   unsigned long step = 0;
   RpnBCD();
   void reset();
+  bool nextNumberReplaces() const { return nextNumberReplacesX; }
+  void setNextNumberReplaces(bool v) { nextNumberReplacesX = v; }
   bool execute(const std::string &token);
   std::string registerDump() const;
 private:

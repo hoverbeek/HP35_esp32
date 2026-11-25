@@ -1,3 +1,21 @@
+# Phase 7.15 — ESP32-S3 sleep and RTC register retention
+
+Based on Phase 7.14, with `sleep status`, `sleep light [seconds]`,
+`sleep deep [seconds]`, and `sleep auto on/off` through Serial0 at 115200.
+
+- Deep sleep stores BCD X/Y/Z/T, RPN entry-replacement status, error message,
+  floating stack, active view and prism mode in RTC retention memory, protected
+  by a version marker and checksum.
+- Light sleep retains live RAM and returns from a timer wake without reboot.
+- USB serial is **not** configured as a deep-sleep wake source. Timers are used.
+- Auto sleep is experimental and disabled by default. Idle serial bytes can be
+  missed while sleeping. Deep sleep automatically wakes after 10 seconds.
+- This does **not** persist across battery disconnect or full power-off.
+- Full dynamic CORDIC trace buffers are intentionally not persisted.
+- Run `test-host/test_sleep_state.cpp` alongside the existing host tests.
+- Firmware remains **untested on the physical board**; verify using PlatformIO.
+
+---
 # HP-35 Phase 7.14 — Isolated LVGL prism screen
 
 **Fix:** Phase 7.13 mixed LVGL's partial-screen flushes with direct Arduino_GFX drawing. This could leave the debugger title/tabs visible over the rotating prism value, and corrupt text. Phase 7.14 uses a **second, all-black LVGL screen** and an `LV_EVENT_DRAW_MAIN` custom drawing callback for the same rotating bitmap glyphs. The only ST7789 writer is the existing LVGL flush callback.
