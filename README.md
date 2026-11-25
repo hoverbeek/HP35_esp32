@@ -1,3 +1,34 @@
+## 7.19 follow-up: serial-safe automatic motion mode (updated)
+
+**Important design correction:** UART0 is not a reliable wake source in our
+interrupt-driven light-sleep implementation. Sending commands while the MCU
+sleeps can lose bytes and leave PlatformIO Monitor effectively inaccessible.
+
+- `sleep auto motion on` is now **console-safe**: after five seconds it turns
+  off the LCD backlight, but **keeps the ESP32-S3 CPU and UART running**. It
+  samples the QMI8658 every 125 ms and lights the LCD when motion is detected.
+  Typing in PlatformIO Monitor also restores the LCD and remains responsive.
+  **This is NOT MCU light sleep and does not deliver equivalent power savings.**
+- `sleep auto motion off` returns to normal operation.
+- `sleep auto motion irq on` retains the previous **experimental** interrupt-
+  driven light-sleep behavior, with 2-second timer wake-ups. UART characters
+  can still be lost; reset the board to recover if you lose command access.
+- `sleep auto motion irq off` can disable IRQ mode only when UART commands
+  successfully reach the awake MCU.
+- `sleep motion irq 15` still performs a one-shot genuine light-sleep test.
+
+To test: reset/power-cycle to ensure the old auto mode is off, flash the new
+firmware, run `sleep auto motion on`, leave board still until LCD goes dark,
+then type `sleep status` **without picking it up**. The command should
+work; the LCD should wake on the first received serial key. Next, test motion
+wake by picking up the board. `sleep auto motion off` ends the test.
+
+The remainder of the prior Phase 7.19 instructions describes the experimental
+IRQ mode. Do not mistake the console-safe LCD-blank mode for true low-power
+light sleep.
+
+---
+
 # HP-35 Phase 7.19 — automatic interrupt-driven motion sleep
 
 Based on hardware-validated Phase 7.18. **Off by default.** Existing one-shot
