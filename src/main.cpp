@@ -59,6 +59,8 @@ static constexpr uint32_t AUTO_LIGHT_IDLE_MS=100;
 static constexpr uint32_t AUTO_DEEP_IDLE_MS=30000;
 static constexpr uint32_t AUTO_LIGHT_SLICE_MS=100;
 static constexpr uint32_t AUTO_DEEP_WAKE_SEC=10;
+void show();
+static bool lightSleepMs(uint32_t ms);
 static hp35motion::QMI8658 motion;
 static constexpr uint32_t MOTION_THRESHOLD=1200;
 static constexpr uint32_t MOTION_INTERVAL_MS=125;
